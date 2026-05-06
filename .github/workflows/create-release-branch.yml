@@ -55,7 +55,7 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --tag v${{ inputs.version }}
+          args:
         env:
           OUTPUT: CHANGELOG.md
 
