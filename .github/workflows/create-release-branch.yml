@@ -27,46 +27,24 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Create release branch
-        run: |
-          git fetch origin
-          git checkout develop
-          git pull origin develop
-          git checkout -b release/${{ inputs.version }}
-          git push origin release/${{ inputs.version }}
-
-      - name: Update version files
-        run: |
-          # Update __version__.py
-          if [ -f src/lashtest/__version__.py ]; then
-            sed -i 's/__version__ = "[^"]*"/__version__ = "${{ inputs.version }}"/' src/lashtest/__version__.py
-          fi
-          
-          # Update pyproject.toml
-          if [ -f pyproject.toml ]; then
-            sed -i 's/^version = "[^"]*"/version = "${{ inputs.version }}"/' pyproject.toml
-          fi
-          
-          # Update setup.cfg if it exists
-          if [ -f setup.cfg ]; then
-            sed -i 's/^version = .*/version = ${{ inputs.version }}/' setup.cfg
-          fi
-
       - name: Generate CHANGELOG with git-cliff
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args:
         env:
           OUTPUT: CHANGELOG.md
 
-
-      - name: Commit version and changelog updates
+      - name: Update version files
         run: |
-          git add src/lashtest/__version__.py pyproject.toml setup.cfg CHANGELOG.md 2>/dev/null || true
-          git commit -m "chore: bump version to ${{ inputs.version }}" || true
-          git push origin release/${{ inputs.version }}
+          sed -i 's/__version__ = "[^"]*"/__version__ = "${{ inputs.version }}"/' src/lashtest/__version__.py
+          sed -i 's/^version = "[^"]*"/version = "${{ inputs.version }}"/' pyproject.toml
 
+      - name: Commit changes
+        run: |
+          git add .
+          git commit -m "chore: release ${{ inputs.version }}"
+          git push origin release/${{ inputs.version }}
+          
       - name: Create Pull Request
         uses: actions/github-script@v7
         with:
