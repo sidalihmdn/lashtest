@@ -41,10 +41,13 @@ jobs:
 
       - name: Commit changes
         run: |
+          git fetch origin
+          git checkout -b release/${{ inputs.version }} origin/develop
+          
           git add .
           git commit -m "chore: release ${{ inputs.version }}"
           git push origin release/${{ inputs.version }}
-          
+
       - name: Create Pull Request
         uses: actions/github-script@v7
         with:
