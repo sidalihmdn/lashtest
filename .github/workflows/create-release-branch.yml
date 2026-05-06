@@ -59,6 +59,7 @@ jobs:
         env:
           OUTPUT: CHANGELOG.md
 
+
       - name: Commit version and changelog updates
         run: |
           git add src/lashtest/__version__.py pyproject.toml setup.cfg CHANGELOG.md 2>/dev/null || true
