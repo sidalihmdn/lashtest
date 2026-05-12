@@ -32,6 +32,11 @@ class Response:
         """
         return self.status_code
 
+    @property
+    def assertions(self) -> "AssertionsFacade":
+        """Return an assertions Facade instance that can be chained with other methods"""
+        return AssertionFacade(self)
+
     def json(self) -> Dict[str, Any]:
         """Return the response body as JSON.
         Args:
