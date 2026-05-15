@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional
 from jsonpath_ng import parse
 import requests
+from ..assertions.facade import AssertionsFacade
 
 class Response:
     """A class representing an API response."""
@@ -31,6 +32,11 @@ class Response:
             The HTTP status code of the response.
         """
         return self.status_code
+
+    @property
+    def assertions(self) -> "AssertionsFacade":
+        """Return an assertions Facade instance that can be chained with other methods"""
+        return AssertionsFacade(self)
 
     def json(self) -> Dict[str, Any]:
         """Return the response body as JSON.
