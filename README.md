@@ -11,7 +11,8 @@ A Python library for writing expressive, readable API tests with built-in Allure
 ## Features
 
 - **Fluent builder API** — chain methods to build requests in one expression
-- **Rich assertions** — assert status, JSON body, headers, cookies, response time, JSONPath, and JSON Schema
+- **Rich assertions** — assert status, JSON body, headers, cookies, response time, JSONPath, JSON Schema, and XML with XPath
+- **XML support** — XPath queries with automatic namespace detection for SOAP, RSS, Atom, and SVG
 - **Multiple auth strategies** — Bearer token, Basic auth, API key
 - **Retry with exponential backoff** — configurable per-request
 - **File uploads** — multipart form data with automatic handle cleanup
@@ -64,6 +65,12 @@ lashtest run tests/
 - [Client configuration](#client-configuration)
 - [Making requests](#making-requests)
 - [Assertions](#assertions)
+  - [Status](#status)
+  - [JSON body](#json-body)
+  - [JSONPath](#jsonpath)
+  - [Headers and cookies](#headers-and-cookies)
+  - [Performance](#performance)
+  - [XML body](#xml-body)
 - [Authentication](#authentication)
 - [Retry logic](#retry-logic)
 - [File uploads](#file-uploads)
@@ -240,6 +247,46 @@ response.assert_cookie_value('theme', 'dark')
 
 ```python
 response.assert_response_time(0.5)   # must respond in under 0.5 seconds
+```
+
+### XML body
+
+Test APIs that return XML (SOAP, RSS, Atom, SVG, etc.) with XPath expressions and automatic namespace support.
+
+```python
+# Basic XPath selection and text assertion
+response.assertions.xml.xpath('//book[1]/title').text.eq('Python Guide')
+
+# Count elements
+response.assertions.xml.xpath('//book').count.gte(5)
+
+# Assert element exists
+response.assertions.xml.xpath('//user[@id="123"]').exists()
+
+# Attribute assertions
+response.assertions.xml.xpath('//book[@id="123"]').attribute('author').contains('Smith')
+
+# Collection assertions on multiple nodes via .all()
+response.assertions.xml.xpath('//book').all().text.contains('Python')
+
+# First and nth node selection
+response.assertions.xml.xpath('//item').first.text.eq('First Item')
+response.assertions.xml.xpath('//item').nth(2).text.eq('Second Item')
+```
+
+#### Automatic Namespace Support
+
+Namespaces are automatically detected — no configuration needed. Works with:
+
+```python
+# SOAP envelope
+response.assertions.xml.xpath('//soap:Body').exists()
+
+# Atom feed
+response.assertions.xml.xpath('//entry/title').text.eq('Latest Post')
+
+# Default namespace
+response.assertions.xml.xpath('//book').count.gte(1)
 ```
 
 ---
