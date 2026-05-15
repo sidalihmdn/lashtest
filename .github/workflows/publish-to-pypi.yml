@@ -39,7 +39,7 @@ jobs:
           twine upload dist/* -u __token__ -p ${{ secrets.PYPI_KEY }} --non-interactive
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: built-packages
