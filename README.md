@@ -2,7 +2,7 @@
 
 A Python library for writing expressive, readable API tests with built-in Allure reporting.
 
-[![PyPI version](https://badge.fury.io/py/lashtest.svg)](https://badge.fury.io/py/lashtest)
+[![Release](https://img.shields.io/github/v/release/sidalihmdn/lashtest)](https://github.com/sidalihmdn/lashtest/releases)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
