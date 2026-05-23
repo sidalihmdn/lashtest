@@ -228,9 +228,16 @@ response.assert_json_schema(schema)
 Uses [JSONPath](https://goessner.net/articles/JsonPath/) expressions via `jsonpath_ng`.
 
 ```python
-response.assert_json_path('$.id', 1)                    # value match
-response.assert_json_path_type('$.id', int)             # type match
-response.assert_json_path_exists('$.address.city')      # existence check
+# Fluent API (same style as XML assertions)
+response.assertions.json.path('$.books[0].title').text.eq('Python Guide')
+response.assertions.json.path('$.books[*]').count.gte(1)
+response.assertions.json.path('$.books[*].title').all().text.contains('Python Guide')
+response.assertions.json.path('$.address.city').exists()
+
+# Backward compatible wrappers
+response.assert_json_path('$.id', 1)
+response.assert_json_path_type('$.id', int)
+response.assert_json_path_exists('$.address.city')
 ```
 
 ### Headers and cookies
