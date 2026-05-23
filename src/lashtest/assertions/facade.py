@@ -1,4 +1,5 @@
 from .xml.xml_assertions import XmlAssertions
+from .json.json_assertions import JsonAssertions
 
 class AssertionsFacade:
     """Facade for accessing different types of assertions."""
@@ -10,4 +11,7 @@ class AssertionsFacade:
         """Access XML-specific assertions."""
         return XmlAssertions(self.response)
 
-    # TODO : migrate the json, http here
+    @property
+    def json(self):
+        """Access JSON-specific assertions."""
+        return JsonAssertions(self.response)

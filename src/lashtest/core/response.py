@@ -1,5 +1,4 @@
 from typing import Any, Dict, Optional
-from jsonpath_ng import parse
 import requests
 from ..assertions.facade import AssertionsFacade
 
@@ -197,11 +196,11 @@ class Response:
             ... response.assert_json_path("$.data.id", 123)
         """
         __tracebackhide__ = True
-        actual_json = self.json()
-        jsonpath_expr = parse(json_path)
-        matches = [match.value for match in jsonpath_expr.find(actual_json)]
-        assert matches, f"No matches found for JSON path '{json_path}'"
-        assert matches[0] == expected_value, f"Expected value at JSON path '{json_path}' to be '{expected_value}', got '{matches[0]}'"
+        selection = self.assertions.json.path(json_path)
+        selection.exists()
+        actual_value = selection.first.values[0]
+        assert actual_value == expected_value, \
+            f"Expected value at JSON path '{json_path}' to be '{expected_value}', got '{actual_value}'"
         return self
 
     def assert_json_path_type(self, json_path: str, expected_type: type) -> "Response":
@@ -218,11 +217,11 @@ class Response:
             AssertionError: If the value at the specified JSON path is not of the expected type.
         """
         __tracebackhide__ = True
-        actual_json = self.json()
-        jsonpath_expr = parse(json_path)
-        matches = [match.value for match in jsonpath_expr.find(actual_json)]
-        assert matches, f"No matches found for JSON path '{json_path}'"
-        assert isinstance(matches[0], expected_type), f"Expected value at JSON path '{json_path}' to be of type '{expected_type.__name__}', got '{type(matches[0]).__name__}'"
+        selection = self.assertions.json.path(json_path)
+        selection.exists()
+        actual_value = selection.first.values[0]
+        assert isinstance(actual_value, expected_type), \
+            f"Expected value at JSON path '{json_path}' to be of type '{expected_type.__name__}', got '{type(actual_value).__name__}'"
         return self
 
     def assert_json_path_exists(self, json_path: str) -> "Response":
@@ -238,10 +237,7 @@ class Response:
             AssertionError: If no value exists at the specified JSON path.
         """
         __tracebackhide__ = True
-        actual_json = self.json()
-        jsonpath_expr = parse(json_path)
-        matches = [match.value for match in jsonpath_expr.find(actual_json)]
-        assert matches, f"No matches found for JSON path '{json_path}'"
+        self.assertions.json.path(json_path).exists()
         return self
 
     def assert_cookie_exists(self, key: str) -> "Response":
