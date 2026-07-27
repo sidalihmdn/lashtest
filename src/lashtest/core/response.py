@@ -273,3 +273,40 @@ class Response:
         actual_value = cookies[key]
         assert actual_value == expected_value, f"Expected cookie '{key}' to have value '{expected_value}', got '{actual_value}'"
         return self
+
+    def assert_snapshot(
+        self,
+        name: str,
+        *,
+        ignore: Optional[list] = None,
+        update: bool = False,
+        snapshot_dir: str = ".lashtest_snapshots",
+    ) -> "Response":
+        """Assert that the JSON body matches the stored snapshot *name*.
+
+        On first run (or when *update* is ``True``) the current body is
+        written to disk as the golden master.  Subsequent runs compare the
+        current body to the stored one.
+
+        Args:
+            name: Snapshot identifier (used as the filename stem).
+            ignore: List of JSON keys to exclude from comparison (e.g.
+                ``['id', 'created_at']``).  Keys are redacted recursively.
+            update: When ``True`` the snapshot file is overwritten with
+                the current body.
+            snapshot_dir: Directory where snapshot files are stored.
+                Defaults to ``".lashtest_snapshots"``.
+
+        Returns:
+            The current Response instance for chaining.
+
+        Raises:
+            AssertionError: When the sanitised body differs from the
+                stored snapshot.
+        """
+        __tracebackhide__ = True
+        from ..assertions.snapshot import SnapshotStore
+        store = SnapshotStore(snapshot_dir=snapshot_dir, update=update)
+        store.assert_json(name, self.json(), ignore=ignore)
+        return self
+
