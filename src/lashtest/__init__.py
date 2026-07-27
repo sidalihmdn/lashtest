@@ -13,6 +13,7 @@ from lashtest.core.exceptions import (
     MaxRetriesExceededError,
 )
 from lashtest.http import BasicAuth, BearerToken, APIKey
+from lashtest.http.auth import OAuth2ClientCredentials, OAuth2RefreshToken, CustomTokenProvider
 from lashtest.decorators import authenticated, tag, title, severity, description, link
 
 
@@ -32,6 +33,9 @@ __all__ = [
     "BasicAuth",
     "BearerToken",
     "APIKey",
+    "OAuth2ClientCredentials",
+    "OAuth2RefreshToken",
+    "CustomTokenProvider",
     "authenticated",
     "tag",
     "title",

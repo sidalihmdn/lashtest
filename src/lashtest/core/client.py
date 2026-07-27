@@ -6,7 +6,7 @@ from ..http.auth import Auth, BasicAuth, BearerToken, APIKey
 from ..utils.ssl import find_system_ca_bundle
 from ..utils.logger import get_logger
 
-from typing import Optional, Dict, Any, Union, Literal
+from typing import Optional, Dict, Any, Union, Literal, Callable, List
 
 import certifi
 import allure
@@ -27,6 +27,8 @@ class APIClient:
         self.timeout : float = 30  # Default timeout in seconds
         self.session = requests.Session()
         self.verify_ssl : Optional[Union[bool, str]] = certifi.where()  # Can be True, False, or path to CA bundle
+        self._before_request_hooks: List[Callable[[Request], None]] = []
+        self._after_response_hooks: List[Callable[[Request, Response], None]] = []
 
     def with_header(self, key: str, value: str) -> 'APIClient':
         """Add a header to the client.
@@ -78,9 +80,32 @@ class APIClient:
         Raises:
             ValueError: If auth is not an instance of the Auth class.
         """
-        if not isinstance(auth, (Auth, BasicAuth, BearerToken, APIKey)):
+        if not isinstance(auth, Auth):
             raise ValueError("Auth must be an instance of Auth class")
         self.auth = auth
+        return self
+
+    def add_hook(self, event: str, fn: Callable) -> 'APIClient':
+        """Register a request/response hook.
+
+        Args:
+            event: ``"before_request"`` or ``"after_response"``.
+            fn: Callable invoked at the appropriate time.
+                ``before_request`` hooks receive ``(request: Request)``.
+                ``after_response`` hooks receive ``(request: Request, response: Response)``.
+        Returns:
+            The current APIClient instance for chaining.
+        Raises:
+            ValueError: If *event* is not recognised or *fn* is not callable.
+        """
+        if not callable(fn):
+            raise ValueError("Hook must be callable")
+        if event == "before_request":
+            self._before_request_hooks.append(fn)
+        elif event == "after_response":
+            self._after_response_hooks.append(fn)
+        else:
+            raise ValueError(f"Unknown hook event '{event}'. Use 'before_request' or 'after_response'.")
         return self
 
     def with_ssl_verification(self, verify: Optional[Union[bool, str]]) -> 'APIClient':
@@ -214,6 +239,10 @@ class APIClient:
         if auth_to_use and hasattr(auth_to_use, 'apply'):
             merged_headers = auth_to_use.apply(merged_headers)
 
+        # Run before_request hooks
+        for hook in self._before_request_hooks:
+            hook(request)
+
         # Allure step for request
         with allure.step(f"Send {request.method} request to {url}"):
             allure.attach(
@@ -251,7 +280,13 @@ class APIClient:
                 )
                 request.response = response
                 logger.debug(f" <- {response.status_code} ({response.elapsed.total_seconds():.3f}s)")
-                return Response(response)
+                wrapped = Response(response)
+
+                # Run after_response hooks
+                for hook in self._after_response_hooks:
+                    hook(request, wrapped)
+
+                return wrapped
             except requests.exceptions.HTTPError as e:
                 raise HTTPError(e.response) from e
             except requests.exceptions.Timeout as e:
