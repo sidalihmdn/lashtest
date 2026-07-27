@@ -13,13 +13,18 @@ A Python library for writing expressive, readable API tests with built-in Allure
 - **Fluent builder API** — chain methods to build requests in one expression
 - **Rich assertions** — assert status, JSON body, headers, cookies, response time, JSONPath, JSON Schema, and XML with XPath
 - **XML support** — XPath queries with automatic namespace detection for SOAP, RSS, Atom, and SVG
-- **Multiple auth strategies** — Bearer token, Basic auth, API key
-- **Retry with exponential backoff** — configurable per-request
+- **Multiple auth strategies** — Bearer token, Basic auth, API key, OAuth2 client credentials, OAuth2 refresh token, custom token provider
+- **Retry with exponential backoff** — configurable per-request with jitter, backoff factor, max backoff, and exception-level retry
+- **Request/response hooks** — register `before_request` and `after_response` callbacks on the client
+- **Polling utility** — `wait_until()` for eventually-consistent APIs with configurable timeout and interval
+- **Snapshot assertions** — `SnapshotStore` and `assert_snapshot()` for golden-file response testing
+- **OpenAPI validation** — `OpenAPIValidator` loads a spec and validates responses against it
+- **Async support** — `AsyncAPIClient` backed by `httpx` mirrors the synchronous API with `async`/`await`
 - **File uploads** — multipart form data with automatic handle cleanup
 - **Allure integration** — requests and responses auto-attached as report steps
 - **Test decorators** — `@authenticated`, `@title`, `@severity`, `@description`, `@tag`, `@link`
 - **Fake data generator** — built-in `fake` for names, emails, phone numbers, addresses
-- **CLI runner** — `lashtest run` collects and runs tests, `lashtest report` generates HTML reports
+- **CLI runner** — `lashtest run` collects and runs tests with parallel execution, JUnit XML output, and env profiles; `lashtest report` generates HTML reports
 - **SSL auto-detection** — finds the system CA bundle on macOS, Linux, and Windows without configuration
 
 ---
@@ -37,6 +42,19 @@ pip install "lashtest[dev]"
 ```
 
 **Requirements:** Python 3.9+, and [Allure CLI](https://docs.qameta.io/allure/#_installing_a_commandline) for HTML report generation.
+
+**Optional extras:**
+
+```bash
+# Async support
+pip install httpx
+
+# OpenAPI validation
+pip install openapi-spec-validator pyyaml
+
+# Parallel test execution
+pip install pytest-xdist
+```
 
 ---
 
@@ -73,6 +91,11 @@ lashtest run tests/
   - [XML body](#xml-body)
 - [Authentication](#authentication)
 - [Retry logic](#retry-logic)
+- [Hooks](#hooks)
+- [Polling](#polling)
+- [Snapshot assertions](#snapshot-assertions)
+- [OpenAPI validation](#openapi-validation)
+- [Async client](#async-client)
 - [File uploads](#file-uploads)
 - [Test decorators](#test-decorators)
 - [Fake data](#fake-data)
@@ -303,7 +326,7 @@ response.assertions.xml.xpath('//book').count.gte(1)
 Import auth classes from `lashtest.http`:
 
 ```python
-from lashtest.http import BearerToken, BasicAuth, APIKey
+from lashtest.http import BearerToken, BasicAuth, APIKey, OAuth2ClientCredentials, OAuth2RefreshToken, CustomTokenProvider
 ```
 
 ### Bearer token
@@ -330,6 +353,60 @@ client = APIClient('https://api.example.com').with_auth(APIKey(api_key='secret')
 
 # Custom header name
 client = APIClient('https://api.example.com').with_auth(APIKey(header_name='X-Custom-Key', api_key='secret'))
+```
+
+### OAuth2 client credentials
+
+Fetches and caches an access token using the client-credentials flow. Refreshes automatically when the token expires.
+
+```python
+from lashtest.http import OAuth2ClientCredentials
+
+client = APIClient('https://api.example.com').with_auth(
+    OAuth2ClientCredentials(
+        token_url='https://auth.example.com/oauth/token',
+        client_id='my-client',
+        client_secret='my-secret',
+        scope='read write',   # optional
+    )
+)
+```
+
+### OAuth2 refresh token
+
+Uses an existing refresh token to obtain (and cache) a fresh access token.
+
+```python
+from lashtest.http import OAuth2RefreshToken
+
+client = APIClient('https://api.example.com').with_auth(
+    OAuth2RefreshToken(
+        token_url='https://auth.example.com/oauth/token',
+        client_id='my-client',
+        client_secret='my-secret',
+        refresh_token='<long-lived-refresh-token>',
+    )
+)
+```
+
+### Custom token provider
+
+Supply any callable that returns the current token string. Useful for reading tokens from a vault or a custom cache.
+
+```python
+from lashtest.http import CustomTokenProvider
+
+def get_token():
+    return vault_client.read_secret('api/token')['data']['value']
+
+client = APIClient('https://api.example.com').with_auth(
+    CustomTokenProvider(get_token)
+)
+
+# Custom header and scheme
+client = APIClient('https://api.example.com').with_auth(
+    CustomTokenProvider(get_token, header_name='X-Auth-Token', scheme='')
+)
 ```
 
 ### Per-request override
@@ -360,8 +437,12 @@ with (
 | `max_attempts` | `int` | — | Maximum number of attempts (required) |
 | `on_status` | `list[int]` | `[500, 502, 503, 504]` | Retry on these status codes |
 | `raise_on_exhausted` | `bool` | `False` | Raise `MaxRetriesExceededError` after all attempts fail |
+| `backoff_factor` | `float` | `1.0` | Multiplier for the exponential delay |
+| `max_backoff` | `float` | `60.0` | Upper bound on the computed delay (seconds) |
+| `jitter` | `bool` | `False` | Add a random 0–1 s fraction to each delay to avoid thundering-herd |
+| `retry_on_exceptions` | `bool` | `False` | Also retry on connection/timeout exceptions, not just status codes |
 
-**Backoff schedule:** `2^(attempt-1)` seconds — 1 s, 2 s, 4 s, …
+**Backoff schedule:** `backoff_factor * 2^(attempt-1)` seconds, capped at `max_backoff` — 1 s, 2 s, 4 s, …
 
 ```python
 from lashtest import MaxRetriesExceededError
@@ -372,6 +453,178 @@ try:
 except MaxRetriesExceededError as e:
     print(f"Failed after {e.retries} attempts, last status: {e.status_code}")
 ```
+
+Advanced retry with jitter and exception handling:
+
+```python
+with (
+    client.post('/submit')
+    .with_json({'data': 'value'})
+    .with_retry(
+        max_attempts=5,
+        on_status=[429, 500, 502, 503, 504],
+        backoff_factor=0.5,
+        max_backoff=30.0,
+        jitter=True,
+        retry_on_exceptions=True,
+    )
+) as response:
+    response.assert_ok()
+```
+
+---
+
+## Hooks
+
+Register callbacks that run before every request or after every response on a client.
+
+```python
+def log_request(request):
+    print(f"--> {request.method} {request.endpoint}")
+
+def log_response(request, response):
+    print(f"<-- {response.status_code}")
+
+client = (
+    APIClient('https://api.example.com')
+    .add_hook('before_request', log_request)
+    .add_hook('after_response', log_response)
+)
+```
+
+| Event | Callback signature | Description |
+|---|---|---|
+| `"before_request"` | `fn(request: Request)` | Called before each request is sent |
+| `"after_response"` | `fn(request: Request, response: Response)` | Called after each response is received |
+
+---
+
+## Polling
+
+Use `wait_until()` to poll a condition function repeatedly until it returns a truthy value. Designed for eventually-consistent APIs where a resource may not be immediately available after creation.
+
+```python
+from lashtest.utils.polling import wait_until
+
+client = APIClient('https://api.example.com')
+
+def job_is_done():
+    with client.get('/jobs/42') as r:
+        return r.json().get('status') == 'done'
+
+# Raises PollingTimeoutError if not satisfied within 60 s
+wait_until(job_is_done, timeout=60, interval=2)
+
+# Return None instead of raising
+result = wait_until(job_is_done, timeout=30, raises=False)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `condition` | `Callable[[], T]` | — | Zero-argument callable; polling stops when it returns a truthy value |
+| `timeout` | `float` | `30.0` | Maximum seconds to wait |
+| `interval` | `float` | `1.0` | Seconds between attempts |
+| `raises` | `bool` | `True` | Raise `PollingTimeoutError` on timeout (pass `False` to return `None`) |
+| `description` | `str` | `None` | Optional label included in the timeout error message |
+
+---
+
+## Snapshot assertions
+
+Snapshot assertions compare a response body against a file stored on disk. On first run the snapshot file is created; subsequent runs compare against it.
+
+### Using `SnapshotStore`
+
+```python
+from lashtest.assertions.snapshot import SnapshotStore
+
+snapshots = SnapshotStore()   # files stored in .lashtest_snapshots/
+
+def test_user_profile():
+    with APIClient('https://api.example.com').get('/users/1') as r:
+        snapshots.assert_json(
+            'user_profile',
+            r.json(),
+            ignore=['updated_at', 'created_at'],   # ignore dynamic keys
+        )
+```
+
+### Using `assert_snapshot()` on the response
+
+```python
+with client.get('/users/1') as r:
+    r.assert_snapshot('user_profile')
+
+# Ignore dynamic fields
+with client.get('/users/1') as r:
+    r.assert_snapshot('user_profile', ignore=['updated_at'])
+
+# Update the stored snapshot
+with client.get('/users/1') as r:
+    r.assert_snapshot('user_profile', update=True)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | — | Snapshot identifier (used as the file stem) |
+| `ignore` | `list[str]` | `None` | Dict keys to redact recursively before comparison |
+| `update` | `bool` | `False` | Overwrite the stored snapshot instead of comparing |
+| `snapshot_dir` | `str` | `".lashtest_snapshots"` | Directory where snapshot files are stored |
+
+---
+
+## OpenAPI validation
+
+`OpenAPIValidator` loads an OpenAPI 3.x spec and validates that responses conform to it.
+
+```bash
+pip install openapi-spec-validator pyyaml   # required extras
+```
+
+```python
+from lashtest import APIClient
+from lashtest.openapi import OpenAPIValidator
+
+validator = OpenAPIValidator('openapi.yaml')   # or a URL
+
+def test_get_user():
+    with APIClient('https://api.example.com').get('/users/1') as r:
+        validator.assert_response('/users/{id}', 'GET', 200, r)
+```
+
+The validator also lets you inspect the schema directly:
+
+```python
+schema = validator.get_response_schema('/users/{id}', 'GET', 200)
+```
+
+---
+
+## Async client
+
+`AsyncAPIClient` is a fully async counterpart to `APIClient`, backed by `httpx`.
+
+```bash
+pip install httpx   # required
+```
+
+```python
+import asyncio
+from lashtest.core.async_client import AsyncAPIClient
+from lashtest.http import BearerToken
+
+async def test_async():
+    async with AsyncAPIClient('https://api.example.com') as client:
+        client.with_base_path('/v1').with_auth(BearerToken('my-token'))
+
+        async with client.get('/users/1') as response:
+            response.assert_status(200)
+            response.assert_json_contains({'id': 1})
+
+asyncio.run(test_async())
+```
+
+The async request builder supports the same chainable methods as the synchronous `Request`: `with_header`, `with_param`, `with_params`, `with_json`, `with_body`, `with_data`, `with_auth`, `with_timeout`.
 
 ---
 
@@ -548,6 +801,9 @@ Options:
   -v, --verbose              Enable verbose output
   -r, --allure-dir TEXT      Directory for Allure results  [default: allure-results]
   -t, --tags TEXT            Filter tests by tag (comma-separated)
+  -p, --parallel INTEGER     Run tests in parallel using N workers (requires pytest-xdist)
+  --junit-xml TEXT           Write a JUnit XML report to the given path
+  --env TEXT                 Load environment variables from a named profile file
   --help                     Show this message and exit.
 ```
 
@@ -565,6 +821,28 @@ lashtest run -t smoke
 
 # Custom results directory with verbose output
 lashtest run -r ci-results -v
+
+# Run tests in parallel with 4 workers
+lashtest run -p 4
+
+# Write a JUnit XML report
+lashtest run --junit-xml report.xml
+
+# Load a staging environment profile
+lashtest run --env staging
+```
+
+#### Environment profiles
+
+The `--env` flag loads environment variables from a dotenv-style file before running tests. Two naming conventions are supported, both looked up in the current working directory:
+
+- `lashtest.{profile}.env` (e.g. `lashtest.staging.env`)
+- `.env.{profile}` (e.g. `.env.staging`)
+
+```ini
+# lashtest.staging.env
+BASE_URL=https://staging.api.example.com
+API_KEY=staging-secret
 ```
 
 ### `lashtest report`
@@ -595,6 +873,8 @@ All exceptions inherit from `lashtest.APIError`.
 | `JSONDecodeError` | The response body is not valid JSON |
 | `AuthenticationError` | Authentication failed |
 | `MaxRetriesExceededError` | All retry attempts failed (only when `raise_on_exhausted=True`) |
+| `PollingTimeoutError` | `wait_until()` timed out without the condition becoming true |
+| `SnapshotMismatchError` | Response body does not match the stored snapshot |
 
 ```python
 from lashtest import APIClient, APIError, APITimeoutError, MaxRetriesExceededError
