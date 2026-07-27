@@ -105,7 +105,7 @@ class Request:
         Raises:
             ValueError: If auth is not an instance of the Auth class.
         """
-        if not isinstance(auth, (Auth, BasicAuth, BearerToken, APIKey)):
+        if not isinstance(auth, Auth):
             raise ValueError("Auth must be an instance of Auth class")
         self.auth = auth
         return self
@@ -150,38 +150,91 @@ class Request:
         self.data = data
         return self
 
-    def with_retry(self, max_attempts: int, on_status: Optional[List[int]] = None, raise_on_exhausted: bool = False) -> "Request":
+    def with_retry(
+        self,
+        max_attempts: int,
+        on_status: Optional[List[int]] = None,
+        raise_on_exhausted: bool = False,
+        backoff_factor: float = 1.0,
+        max_backoff: float = 60.0,
+        jitter: bool = False,
+        retry_on_exceptions: bool = False,
+    ) -> "Request":
         """Configure retry logic for the request.
+
         Args:
             max_attempts: The maximum number of retry attempts.
-            on_status: A list of HTTP status codes that should trigger a retry. Defaults to [500, 502, 503, 504].
-            raise_on_exhausted: Whether to raise an exception if the maximum retry attempts are exhausted. Defaults to False.
+            on_status: HTTP status codes that trigger a retry. Defaults to [500, 502, 503, 504].
+            raise_on_exhausted: Raise MaxRetriesExceededError when all attempts fail.
+            backoff_factor: Multiplier applied to the exponential delay. Delay is
+                ``backoff_factor * 2^(attempt-1)`` seconds. Defaults to ``1.0``.
+            max_backoff: Upper bound on the computed delay in seconds. Defaults to ``60.0``.
+            jitter: Add a random fraction (0–1 s) to each delay to reduce thundering-herd.
+            retry_on_exceptions: Also retry on connection/timeout exceptions, not just
+                status-code matches.
+
         Returns:
             The current Request instance for chaining.
         """
-
         self._retry_config = {
             "max_attempts": max_attempts,
             "on_status": on_status if on_status is not None else [500, 502, 503, 504],
-            "raise_on_exhausted": raise_on_exhausted
+            "raise_on_exhausted": raise_on_exhausted,
+            "backoff_factor": backoff_factor,
+            "max_backoff": max_backoff,
+            "jitter": jitter,
+            "retry_on_exceptions": retry_on_exceptions,
         }
         return self
 
+    def _compute_backoff(self, attempt: int) -> float:
+        """Return the sleep duration for the given attempt (1-based)."""
+        import random
+        cfg = self._retry_config
+        delay = cfg["backoff_factor"] * (2 ** (attempt - 1))
+        delay = min(delay, cfg["max_backoff"])
+        if cfg["jitter"]:
+            delay += random.random()
+        return delay
+
     def _execute(self) -> "Response":
         """Internal method to execute the request and return a Response object."""
-        self.response = self.client._send_request(self)
-        # retry logic
-        if self._retry_config is not None:
-            attempts = 1
-            while self.response.status_code in self._retry_config['on_status'] and attempts < self._retry_config['max_attempts']:
-                logger.debug(f"Retrying request, attempt {attempts + 1}")
-                attempts += 1
-                time.sleep(2 ** (attempts - 1))  # Exponential backoff
-                self.response = self.client._send_request(self)
+        from ..core.exceptions import APIConnectionError, APITimeoutError
 
-            if self._retry_config['raise_on_exhausted'] :
-                if self.response.status_code in self._retry_config['on_status']:
-                    raise MaxRetriesExceededError(attempts, self.response.status_code)
+        if self._retry_config is None:
+            self.response = self.client._send_request(self)
+            return self.response
+
+        cfg = self._retry_config
+        attempts = 0
+        last_exc: Optional[Exception] = None
+
+        while attempts < cfg["max_attempts"]:
+            attempts += 1
+            try:
+                self.response = self.client._send_request(self)
+                last_exc = None
+            except (APIConnectionError, APITimeoutError) as exc:
+                if cfg["retry_on_exceptions"] and attempts < cfg["max_attempts"]:
+                    logger.debug(f"Retrying after exception ({type(exc).__name__}), attempt {attempts + 1}")
+                    time.sleep(self._compute_backoff(attempts))
+                    last_exc = exc
+                    continue
+                raise
+
+            if self.response.status_code not in cfg["on_status"]:
+                return self.response
+
+            if attempts < cfg["max_attempts"]:
+                logger.debug(f"Retrying request (status {self.response.status_code}), attempt {attempts + 1}")
+                time.sleep(self._compute_backoff(attempts))
+
+        if last_exc is not None:
+            raise last_exc
+
+        if cfg["raise_on_exhausted"] and self.response.status_code in cfg["on_status"]:
+            raise MaxRetriesExceededError(attempts, self.response.status_code)
+
         return self.response
 
     # context manager
