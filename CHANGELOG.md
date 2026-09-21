@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implement all 8 planned features with tests (`554b2b6`)
 
+### DOCUMENTATION
+
+- Update README with new features from last release (`a9d79c8`)
+
 ## [v0.3.0] - 2026-05-23
 
 ### ADDED

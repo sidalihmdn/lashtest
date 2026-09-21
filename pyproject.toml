@@ -5,7 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lashtest"
 description = "A Python library for writing expressive, readable API tests"
-version = "0.4.0"
+
+version = "0.5.0"
+
 requires-python = ">=3.9"
 authors = [
   {name = "Sid-Ali Hamdane", email = "hamdane.sidali@hotmail.com"}
@@ -50,6 +52,9 @@ all = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+lashtest = ["py.typed"]
 
 [project.urls]
 Homepage = "https://github.com/sidalihmdn/lashtest"
