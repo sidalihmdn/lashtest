@@ -51,6 +51,9 @@ all = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+lashtest = ["py.typed"]
+
 [project.urls]
 Homepage = "https://github.com/sidalihmdn/lashtest"
 
