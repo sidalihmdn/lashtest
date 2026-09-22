@@ -2,6 +2,7 @@ from typing import Dict, Optional, Any, List, Union, TYPE_CHECKING
 from ..http.auth import Auth, BasicAuth, BearerToken, APIKey
 import time
 import allure
+import os
 
 from .exceptions import MaxRetriesExceededError
 from ..utils.logger import get_logger
@@ -120,24 +121,42 @@ class Request:
         self.timeout = timeout
         return self
 
-    def with_file(self, field: str, path: str) -> "Request":
-        """Set the file to be uploaded in the request.
+    def with_file(
+        self,
+        field: str,
+        path: str,
+        mime_type: str | None = None,
+    ) -> "Request":
+        """Set a file to be uploaded in the request.
+
         Args:
-            field: The form field name for the file.
-            path: The file path to upload.
+            field: Form field name.
+            path: Path to the file.
+            mime_type: Optional MIME type. If omitted, it is inferred
+                from the file extension.
+
         Returns:
-            The current Request instance for chaining.
-        Raises:
-            ValueError: If field or path is not a string, or if the file cannot be opened.
+            The current Request instance.
         """
         if not isinstance(field, str) or not isinstance(path, str):
             raise ValueError("Field and path must be strings")
+
         try:
-            handle = open(path, 'rb')
-        except Exception as e:
-            raise ValueError(f"Failed to open file: {e}")
-        self.files[field] = handle
+            handle = open(path, "rb")
+        except OSError as e:
+            raise ValueError(f"Failed to open file: {e}") from e
+
+        if mime_type is None:
+            mime_type, _ = mimetypes.guess_type(path)
+
+        self.files[field] = (
+            os.path.basename(path),
+            handle,
+            mime_type or "application/octet-stream",
+        )
+
         self._open_handles.append(handle)
+
         return self
 
     def with_data(self, data: Any) -> "Request":
