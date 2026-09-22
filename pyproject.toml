@@ -53,9 +53,6 @@ all = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools]
-packages = ["lashtest"]
-
 [tool.setuptools.package-data]
 lashtest = ["py.typed"]
 
