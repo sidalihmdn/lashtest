@@ -2,6 +2,7 @@ from typing import Dict, Optional, Any, List, Union, TYPE_CHECKING
 from ..http.auth import Auth, BasicAuth, BearerToken, APIKey
 import time
 import allure
+import mimetypes
 import os
 
 from .exceptions import MaxRetriesExceededError
@@ -125,7 +126,7 @@ class Request:
         self,
         field: str,
         path: str,
-        mime_type: str | None = None,
+        mime_type: Optional[str] = None,
     ) -> "Request":
         """Set a file to be uploaded in the request.
 
