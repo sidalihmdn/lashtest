@@ -1,20 +1,72 @@
-from typing import Any, Dict, Optional
+import io
+import json as _json
+from typing import IO, Any, Dict, Optional
 import requests
 from ..assertions.facade import AssertionsFacade
+from .download import DEFAULT_CHUNK_SIZE, DownloadMixin, new_spool
 
-class Response:
-    """A class representing an API response."""
-    def __init__(self, raw_response : requests.Response) -> None:
+class Response(DownloadMixin):
+    """A class representing an API response.
+
+    Args:
+        raw_response: The underlying ``requests.Response``.
+        streamed: ``True`` when the request was sent with ``stream=True``. The
+            body is then read lazily, chunk by chunk, the first time it is needed.
+        chunk_size: Chunk size used when reading a streamed body.
+    """
+    def __init__(
+        self,
+        raw_response : requests.Response,
+        streamed: bool = False,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> None:
         self._raw : requests.Response = raw_response
         self.status_code: int = raw_response.status_code
         self.headers: Dict[str, str] = raw_response.headers
         self.elapsed: float = raw_response.elapsed.total_seconds()
         self._json_cache: Optional[Dict[str, Any]] = None
+        self.streamed: bool = streamed
+        self._chunk_size: int = chunk_size
+        self._spool: Optional[IO[bytes]] = None
 
+    def _body_spool(self) -> IO[bytes]:
+        """Return a seekable file holding the full body, reading the stream once."""
+        if self._spool is not None:
+            return self._spool
+        if not self.streamed:
+            self._spool = io.BytesIO(self._raw.content)
+            return self._spool
+        from .exceptions import APIConnectionError
+        spool = new_spool()
+        try:
+            for chunk in self._raw.iter_content(chunk_size=self._chunk_size):
+                if chunk:
+                    spool.write(chunk)
+        except (
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ContentDecodingError,
+            requests.exceptions.ConnectionError,
+        ) as e:
+            spool.close()
+            raise APIConnectionError(f"Download interrupted: {e}") from e
+        finally:
+            self._raw.close()
+        self._spool = spool
+        return spool
+
+    def close(self) -> None:
+        """Release the connection and any temporary file holding the body."""
+        self._raw.close()
+        if self._spool is not None:
+            self._spool.close()
+            self._spool = None
 
     @property
     def text(self) -> Any:
         """Return the response body as text."""
+        if self.streamed:
+            encoding = self._raw.encoding or "utf-8"
+            return self.content.decode(encoding, errors="replace")
         return self._raw.text
 
     @property
@@ -48,7 +100,10 @@ class Response:
         """
         if self._json_cache is None:
             try:
-                self._json_cache = self._raw.json()
+                if self.streamed:
+                    self._json_cache = _json.loads(self.content)
+                else:
+                    self._json_cache = self._raw.json()
             except ValueError:
                 raise ValueError("Response body is not valid JSON")
         return self._json_cache
