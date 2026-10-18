@@ -276,11 +276,16 @@ class APIClient:
                     data=request.data,
                     files=request.files,
                     timeout=request.timeout or self.timeout,
-                    verify=self.verify_ssl  # Use SSL verification setting
+                    verify=self.verify_ssl,  # Use SSL verification setting
+                    stream=request.stream_response,
                 )
                 request.response = response
                 logger.debug(f" <- {response.status_code} ({response.elapsed.total_seconds():.3f}s)")
-                wrapped = Response(response)
+                wrapped = Response(
+                    response,
+                    streamed=request.stream_response,
+                    chunk_size=request.chunk_size,
+                )
 
                 # Run after_response hooks
                 for hook in self._after_response_hooks:
