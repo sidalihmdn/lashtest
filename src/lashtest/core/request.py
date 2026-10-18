@@ -6,6 +6,7 @@ import mimetypes
 import os
 
 from .exceptions import MaxRetriesExceededError
+from .download import DEFAULT_CHUNK_SIZE
 from ..utils.logger import get_logger
 if TYPE_CHECKING:
     from .client import APIClient
@@ -32,6 +33,8 @@ class Request:
         self.files : Dict[str, Any] = {}
         self._open_handles : List[Any] = []
         self._retry_config : Optional[Dict[str, Any]] = None
+        self.stream_response : bool = False
+        self.chunk_size : int = DEFAULT_CHUNK_SIZE
 
     def with_header(self, key: str, value: str) -> "Request":
         """Add a header to the request.
@@ -160,6 +163,34 @@ class Request:
 
         return self
 
+    def stream(self, chunk_size: int = DEFAULT_CHUNK_SIZE) -> "Request":
+        """Stream the response body instead of loading it into memory at once.
+
+        Use it to test file downloads. The body is read in chunks of
+        *chunk_size* bytes the first time it is needed and spooled to a
+        temporary file once it outgrows memory, so large files are safe::
+
+            with client.get('/files/report.pdf').stream() as response:
+                response.assert_status(200) \\
+                        .assert_attachment(filename='report.pdf') \\
+                        .assert_checksum('sha256', expected) \\
+                        .save_to(tmp_path)
+
+        The connection and temp file are released when the ``with`` block exits.
+
+        Args:
+            chunk_size: Number of bytes read per chunk. Defaults to 64 KiB.
+        Returns:
+            The current Request instance for chaining.
+        Raises:
+            ValueError: If chunk_size is not a positive integer.
+        """
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError("chunk_size must be a positive integer")
+        self.stream_response = True
+        self.chunk_size = chunk_size
+        return self
+
     def with_data(self, data: Any) -> "Request":
         """Set the form data for the request.
         Args:
@@ -246,6 +277,9 @@ class Request:
                 return self.response
 
             if attempts < cfg["max_attempts"]:
+                if self.stream_response:
+                    # release the discarded streamed response's connection
+                    self.response.close()
                 logger.debug(f"Retrying request (status {self.response.status_code}), attempt {attempts + 1}")
                 time.sleep(self._compute_backoff(attempts))
 
@@ -270,4 +304,6 @@ class Request:
         for handle in self._open_handles:
             handle.close()
         self._open_handles.clear()
+        if self.stream_response and self.response is not None and hasattr(self.response, "close"):
+            self.response.close()
 

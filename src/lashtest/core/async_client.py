@@ -2,29 +2,56 @@
 
 from __future__ import annotations
 
+import io
 import json
-from typing import Any, Dict, List, Optional, Union
+from typing import IO, Any, AsyncIterator, Dict, List, Optional, Union
 
 from ..http.auth import Auth
 from ..utils.logger import get_logger
+from .download import DEFAULT_CHUNK_SIZE, DownloadMixin, new_spool
 
 logger = get_logger()
 
 
-class AsyncResponse:
+class AsyncResponse(DownloadMixin):
     """Thin wrapper around an ``httpx.Response`` with the same assertion API
     as the synchronous :class:`~lashtest.core.response.Response`.
+
+    For streamed requests the client reads the body chunk by chunk into
+    *spool* (memory, then a temp file once large) before building the
+    response, so download assertions stay synchronous and chainable.
     """
 
-    def __init__(self, raw: Any) -> None:
+    def __init__(self, raw: Any, spool: Optional[IO[bytes]] = None) -> None:
         self._raw = raw
         self.status_code: int = raw.status_code
         self.headers: Dict[str, str] = dict(raw.headers)
         self.elapsed: float = raw.elapsed.total_seconds()
         self._json_cache: Optional[Any] = None
+        self.streamed: bool = spool is not None
+        self._spool: Optional[IO[bytes]] = spool
+
+    def _body_spool(self) -> IO[bytes]:
+        if self._spool is None:
+            self._spool = io.BytesIO(self._raw.content)
+        return self._spool
+
+    async def aiter_bytes(self, chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncIterator[bytes]:
+        """Async iteration over the body, for parity with httpx."""
+        for chunk in self.iter_bytes(chunk_size):
+            yield chunk
+
+    def close(self) -> None:
+        """Release the temporary file holding a streamed body."""
+        if self._spool is not None:
+            self._spool.close()
+            self._spool = None
 
     @property
     def text(self) -> str:
+        if self.streamed:
+            encoding = getattr(self._raw, "encoding", None) or "utf-8"
+            return self.content.decode(encoding, errors="replace")
         return self._raw.text
 
     @property
@@ -34,7 +61,10 @@ class AsyncResponse:
     def json(self) -> Any:
         if self._json_cache is None:
             try:
-                self._json_cache = self._raw.json()
+                if self.streamed:
+                    self._json_cache = json.loads(self.content)
+                else:
+                    self._json_cache = self._raw.json()
             except Exception:
                 raise ValueError("Response body is not valid JSON")
         return self._json_cache
@@ -92,6 +122,25 @@ class AsyncRequest:
         self.data: Optional[Any] = None
         self.auth: Optional[Auth] = None
         self.timeout: float = client.timeout
+        self.stream_response: bool = False
+        self.chunk_size: int = DEFAULT_CHUNK_SIZE
+        self._response: Optional[AsyncResponse] = None
+
+    def stream(self, chunk_size: int = DEFAULT_CHUNK_SIZE) -> "AsyncRequest":
+        """Stream the response body chunk by chunk instead of buffering it whole.
+
+        The body is spooled to memory, then to a temp file once it grows
+        large, and released when the ``async with`` block exits::
+
+            async with client.get('/files/report.pdf').stream() as response:
+                response.assert_attachment(filename='report.pdf') \\
+                        .assert_checksum('sha256', expected)
+        """
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError("chunk_size must be a positive integer")
+        self.stream_response = True
+        self.chunk_size = chunk_size
+        return self
 
     def with_header(self, key: str, value: str) -> "AsyncRequest":
         self.headers[key] = value
@@ -135,7 +184,8 @@ class AsyncRequest:
         return self._response
 
     async def __aexit__(self, *_: Any) -> None:
-        pass
+        if self._response is not None:
+            self._response.close()
 
 
 class AsyncAPIClient:
@@ -262,9 +312,25 @@ class AsyncAPIClient:
         if request.data is not None:
             kwargs["data"] = request.data
 
-        raw = await self._client.request(**kwargs)
-        logger.debug(f" <- async {raw.status_code}")
-        return AsyncResponse(raw)
+        if not request.stream_response:
+            raw = await self._client.request(**kwargs)
+            logger.debug(f" <- async {raw.status_code}")
+            return AsyncResponse(raw)
+
+        built = self._client.build_request(**kwargs)
+        raw = await self._client.send(built, stream=True)
+        spool = new_spool()
+        try:
+            async for chunk in raw.aiter_bytes(request.chunk_size):
+                spool.write(chunk)
+        except self._httpx.HTTPError as e:
+            spool.close()
+            from .exceptions import APIConnectionError
+            raise APIConnectionError(f"Download interrupted: {e}") from e
+        finally:
+            await raw.aclose()
+        logger.debug(f" <- async {raw.status_code} (streamed)")
+        return AsyncResponse(raw, spool=spool)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

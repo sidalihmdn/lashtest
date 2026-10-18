@@ -21,6 +21,7 @@ A Python library for writing expressive, readable API tests with built-in Allure
 - **OpenAPI validation** — `OpenAPIValidator` loads a spec and validates responses against it
 - **Async support** — `AsyncAPIClient` backed by `httpx` mirrors the synchronous API with `async`/`await`
 - **File uploads** — multipart form data with automatic handle cleanup
+- **File downloads** — stream response bodies in chunks and assert filename, content type, size, checksum, or exact file contents without loading large files into memory
 - **Allure integration** — requests and responses auto-attached as report steps
 - **Test decorators** — `@authenticated`, `@title`, `@severity`, `@description`, `@tag`, `@link`
 - **Fake data generator** — built-in `fake` for names, emails, phone numbers, addresses
@@ -97,6 +98,7 @@ lashtest run tests/
 - [OpenAPI validation](#openapi-validation)
 - [Async client](#async-client)
 - [File uploads](#file-uploads)
+- [File downloads](#file-downloads)
 - [Test decorators](#test-decorators)
 - [Fake data](#fake-data)
 - [Allure reporting](#allure-reporting)
@@ -646,6 +648,47 @@ with (
     .with_file('resume', '/path/to/cv.pdf')
 ) as response:
     response.assert_ok()
+```
+
+---
+
+## File downloads
+
+Call `.stream()` to test a file download. The body is read in chunks the first time it is needed and spooled to a temporary file once it outgrows memory (10 MB), so large files never have to fit in RAM. The connection and temp file are released when the `with` block exits.
+
+```python
+def test_export_csv(tmp_path):
+    with client.get('/reports/export').stream() as response:
+        response.assert_status(200) \
+                .assert_content_type('text/csv') \
+                .assert_attachment(filename='export.csv') \
+                .assert_content_length() \
+                .assert_body_size(min_bytes=1) \
+                .assert_checksum('sha256', 'e3b0c442...') \
+                .save_to(tmp_path / 'export.csv')
+```
+
+| Method | Description |
+|---|---|
+| `.stream(chunk_size=65536)` | Request builder: stream the body instead of buffering it |
+| `assert_content_type(media_type)` | Media type matches, parameters such as `charset` ignored unless you pass them |
+| `assert_attachment(filename=None)` | `Content-Disposition` is `attachment`, optionally with this filename (`filename*` is decoded) |
+| `assert_content_length()` | Received bytes match the `Content-Length` header, catching truncated downloads |
+| `assert_body_size(equals, min_bytes=, max_bytes=)` | Body size in bytes |
+| `assert_checksum(algorithm, expected)` | Hex digest with any `hashlib` algorithm (`sha256`, `md5`, ...) |
+| `assert_body_equals_file(path)` | Byte-for-byte comparison with a reference file, reporting the first differing byte |
+| `save_to(path)` | Write the body to disk; a directory saves under the advertised filename |
+| `iter_bytes(chunk_size)` | Iterate over the body in chunks |
+| `content`, `body_size`, `filename`, `checksum(algorithm)` | Raw bytes, size, advertised filename, digest |
+
+These helpers also work on non-streamed responses. If the connection drops mid-download, reading the body raises `APIConnectionError`.
+
+With the async client, `.stream()` works the same way and also offers `aiter_bytes()`:
+
+```python
+async with client.get('/files/report.pdf').stream() as response:
+    response.assert_attachment(filename='report.pdf') \
+            .assert_checksum('sha256', expected)
 ```
 
 ---
